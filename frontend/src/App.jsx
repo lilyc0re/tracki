@@ -113,7 +113,19 @@ function App() {
       const data = await response.json();
 
       if (response.ok) {
-        setMessages((prev) => [...prev, { sender: 'bot', text: data.summary }]);
+        setMessages((prev) => [
+          ...prev, 
+          { 
+            sender: 'bot', 
+            text: data.summary,
+            results: {
+              sql: data.sql_query,
+              columns: data.columns,
+              rows: data.rows,
+              summary: data.summary
+            }
+          }
+        ]);
         setSqlHistory((prev) => [
           ...prev, 
           { 
@@ -199,9 +211,8 @@ function App() {
 
   // --- EXCEL/CSV EXPORT UTILITY ---
   const handleExportCSV = (resultData) => {
-    // Fall back to activeResult if no specific resultData is passed
     const dataToExport = resultData || activeResult;
-    if (!dataToExport || !dataToExport.rows.length) return;
+    if (!dataToExport || !dataToExport.rows || !dataToExport.rows.length) return;
 
     const headers = dataToExport.columns.join(',');
 
@@ -226,23 +237,24 @@ function App() {
   };
 
   // --- DYNAMIC SVG CHART GENERATOR ---
-  const renderSVGChart = () => {
-    if (!activeResult || !activeResult.rows.length) return null;
+  const renderSVGChart = (resultData) => {
+    const dataToChart = resultData || activeResult;
+    if (!dataToChart || !dataToChart.rows.length) return null;
 
     let numericCol = null;
     const numericCandidates = ['original_cost', 'current_cost', 'last_sanc_cost', 'allocation', 'throwforward_next_fy', 'balance_till_date', 'expenditure_upto_date', 'outlay_modified_for_curr_fy'];
     
     for (let candidate of numericCandidates) {
-      if (activeResult.columns.includes(candidate)) {
+      if (dataToChart.columns.includes(candidate)) {
         numericCol = candidate;
         break;
       }
     }
 
     if (!numericCol) {
-      for (let col of activeResult.columns) {
+      for (let col of dataToChart.columns) {
         if (['workid', 'uwid', 'district_code', 'state_code', 'constituency_code'].includes(col)) continue;
-        const isNumeric = activeResult.rows.some(row => !isNaN(parseFloat(row[col])) && isFinite(row[col]));
+        const isNumeric = dataToChart.rows.some(row => !isNaN(parseFloat(row[col])) && isFinite(row[col]));
         if (isNumeric) {
           numericCol = col;
           break;
@@ -253,14 +265,14 @@ function App() {
     let labelCol = null;
     const labelCandidates = ['short_name_of_work', 'district_name', 'constituency_name', 'state_name', 'railway', 'allocation'];
     for (let candidate of labelCandidates) {
-      if (activeResult.columns.includes(candidate)) {
+      if (dataToChart.columns.includes(candidate)) {
         labelCol = candidate;
         break;
       }
     }
 
     if (!labelCol) {
-      labelCol = activeResult.columns.find(col => col !== 'workid' && col !== numericCol) || activeResult.columns[0];
+      labelCol = dataToChart.columns.find(col => col !== 'workid' && col !== numericCol) || dataToChart.columns[0];
     }
 
     if (!numericCol) {
@@ -271,7 +283,7 @@ function App() {
       );
     }
 
-    const chartData = activeResult.rows.slice(0, 10);
+    const chartData = dataToChart.rows.slice(0, 10);
     const maxVal = Math.max(...chartData.map(d => parseFloat(d[numericCol] || 0)), 1);
 
     const width = 500;
@@ -356,6 +368,20 @@ function App() {
                     rows: item.rows || [],
                     summary: item.summary || ''
                   });
+                  setMessages([
+                    { sender: 'bot', text: 'Hello! I am your secure SQL Data Assistant. Ask me any custom queries here, or use the quick report cards on the main page!' },
+                    { sender: 'user', text: item.user_query },
+                    {
+                      sender: 'bot',
+                      text: item.summary,
+                      results: {
+                        sql: item.sql_query,
+                        columns: item.columns || [],
+                        rows: item.rows || [],
+                        summary: item.summary || ''
+                      }
+                    }
+                  ]);
                 }}
               >
                 {item.user_query}
@@ -409,115 +435,125 @@ function App() {
           </header>
 
           <div className="chat-body">
-            {/* Conversations */}
-            <div className="chat-message-row">
+            {/* Conversations & Results */}
+            <div className="chat-message-row" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {messages.map((msg, index) => (
-                <div key={index} className={`chat-bubble ${msg.sender}`}>
-                  {msg.text}
-                </div>
-              ))}
-              {loading && <div className="chat-bubble bot">Generating secure query...</div>}
-            </div>
-
-            {/* Side-by-Side Horizontal Results Panel */}
-            {activeResult && (
-              <div className="chat-message-row" style={{ maxWidth: '100%' }}>
-                <div className="results-split-container">
-                  {/* Left Column: SQL and AI Summary */}
-                  <div className="results-split-meta">
-                    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: '12px', padding: '20px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <h4 style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>SQLite Code</h4>
-                        <span style={{ fontSize: '9px', color: 'var(--accent-cyan)', background: 'rgba(75, 86, 148, 0.2)', padding: '2px 6px', borderRadius: '4px' }}>
-                          Sandbox Verified
-                        </span>
-                      </div>
-                      <div className="sql-block" style={{ maxHeight: '180px', overflowY: 'auto' }}>
-                        {activeResult.sql}
-                      </div>
+                <React.Fragment key={index}>
+                  {msg.sender === 'user' ? (
+                    <div className="chat-bubble user" style={{ alignSelf: 'flex-end', background: 'var(--grad-cyan-violet)', color: 'white', borderBottomRightRadius: '2px', padding: '14px 20px', borderRadius: '16px', fontSize: '14px', maxWidth: '85%' }}>
+                      {msg.text}
                     </div>
-
-                    <div className="summary-box" style={{ background: 'rgba(75, 86, 148, 0.08)', border: '1px solid var(--border-light)' }}>
-                      <div className="summary-title">IRPSM Summary</div>
-                      <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{activeResult.summary}</p>
-                    </div>
-                  </div>
-
-                  {/* Right Column: Table / Chart Visualizer */}
-                  <div className="results-split-data">
-                    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: '12px', padding: '20px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <h4 style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Data Output</h4>
-                        
-                        {activeResult.rows.length > 0 && (
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '6px', padding: '2px', display: 'flex', border: '1px solid var(--border-light)' }}>
-                              <button 
-                                onClick={() => setViewMode('table')} 
-                                style={{ 
-                                  background: viewMode === 'table' ? 'var(--grad-cyan-violet)' : 'transparent',
-                                  border: 'none', borderRadius: '4px', padding: '4px 10px', fontSize: '10px', color: 'white', cursor: 'pointer' 
-                                }}
-                              >
-                                Table
-                              </button>
-                              <button 
-                                onClick={() => setViewMode('chart')} 
-                                style={{ 
-                                  background: viewMode === 'chart' ? 'var(--grad-cyan-violet)' : 'transparent',
-                                  border: 'none', borderRadius: '4px', padding: '4px 10px', fontSize: '10px', color: 'white', cursor: 'pointer' 
-                                }}
-                              >
-                                Chart
-                              </button>
-                            </div>
-
-                            <button 
-                              onClick={handleExportCSV} 
-                              style={{ 
-                                background: 'transparent', border: '1px solid var(--accent-cyan)', color: 'var(--accent-cyan)',
-                                borderRadius: '6px', padding: '4px 10px', fontSize: '10px', cursor: 'pointer'
-                              }}
-                            >
-                              Export CSV
-                            </button>
+                  ) : (
+                    msg.results ? (
+                      <div className="bot-notebook-response" style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {/* 1. SQLite Code block */}
+                        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: '12px', padding: '20px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px' }}>SQLite Code</span>
+                            <span style={{ fontSize: '9px', color: 'var(--accent-cyan)', background: 'rgba(75, 86, 148, 0.2)', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>
+                              Sandbox Verified
+                            </span>
                           </div>
-                        )}
-                      </div>
+                          <div className="sql-block" style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                            {msg.results.sql}
+                          </div>
+                        </div>
 
-                      {activeResult.rows.length === 0 ? (
-                        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No data records to display.</p>
-                      ) : (
-                        viewMode === 'table' ? (
-                          <div className="table-wrapper" style={{ maxHeight: '350px' }}>
-                            <table>
-                              <thead>
-                                <tr>
-                                  {activeResult.columns.map((col) => (
-                                    <th key={col}>{col}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {activeResult.rows.map((row, rIdx) => (
-                                  <tr key={rIdx}>
-                                    {activeResult.columns.map((col) => (
-                                      <td key={col}>{String(row[col] ?? '')}</td>
+                        {/* 2. Data Output table/chart */}
+                        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: '12px', padding: '20px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px' }}>Data Output</span>
+                            
+                            {msg.results.rows.length > 0 && (
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '6px', padding: '2px', display: 'flex', border: '1px solid var(--border-light)' }}>
+                                  <button 
+                                    onClick={() => {
+                                      setMessages(prev => prev.map((m, idx) => idx === index ? { ...m, viewMode: 'table' } : m));
+                                    }}
+                                    style={{ 
+                                      background: (msg.viewMode || 'table') === 'table' ? 'var(--grad-cyan-violet)' : 'transparent',
+                                      border: 'none', borderRadius: '4px', padding: '4px 10px', fontSize: '10px', color: 'white', cursor: 'pointer', fontWeight: '500' 
+                                    }}
+                                  >
+                                    Table
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      setMessages(prev => prev.map((m, idx) => idx === index ? { ...m, viewMode: 'chart' } : m));
+                                    }}
+                                    style={{ 
+                                      background: msg.viewMode === 'chart' ? 'var(--grad-cyan-violet)' : 'transparent',
+                                      border: 'none', borderRadius: '4px', padding: '4px 10px', fontSize: '10px', color: 'white', cursor: 'pointer', fontWeight: '500' 
+                                    }}
+                                  >
+                                    Chart
+                                  </button>
+                                </div>
+
+                                <button 
+                                  onClick={() => handleExportCSV(msg.results)} 
+                                  style={{ 
+                                    background: 'transparent', border: '1px solid var(--accent-cyan)', color: 'var(--accent-cyan)',
+                                    borderRadius: '6px', padding: '4px 10px', fontSize: '10px', cursor: 'pointer', fontWeight: '600'
+                                  }}
+                                >
+                                  Export CSV
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {msg.results.rows.length === 0 ? (
+                            <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No data records to display.</p>
+                          ) : (
+                            (msg.viewMode || 'table') === 'table' ? (
+                              <div className="table-wrapper" style={{ maxHeight: '350px' }}>
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      {msg.results.columns.map((col) => (
+                                        <th key={col}>{col}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {msg.results.rows.map((row, rIdx) => (
+                                      <tr key={rIdx}>
+                                        {msg.results.columns.map((col) => (
+                                          <td key={col}>{String(row[col] ?? '')}</td>
+                                        ))}
+                                      </tr>
                                     ))}
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          renderSVGChart()
-                        )
-                      )}
-                    </div>
-                  </div>
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              renderSVGChart(msg.results)
+                            )
+                          )}
+                        </div>
+
+                        {/* 3. IRPSM Summary */}
+                        <div className="chat-bubble bot" style={{ maxWidth: '100%', alignSelf: 'stretch', background: 'rgba(75, 86, 148, 0.15)', border: '1px solid var(--border-light)', borderBottomLeftRadius: '2px', padding: '14px 20px', borderRadius: '16px', fontSize: '14px' }}>
+                          <div style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>IRPSM Summary</div>
+                          <div style={{ color: 'var(--text-primary)', lineHeight: '1.6' }}>{msg.results.summary}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="chat-bubble bot" style={{ alignSelf: 'flex-start', background: 'rgba(75, 86, 148, 0.15)', border: '1px solid var(--border-light)', borderBottomLeftRadius: '2px', padding: '14px 20px', borderRadius: '16px', fontSize: '14px', maxWidth: '85%' }}>
+                        {msg.text}
+                      </div>
+                    )
+                  )}
+                </React.Fragment>
+              ))}
+              {loading && (
+                <div className="chat-bubble bot" style={{ alignSelf: 'flex-start', background: 'rgba(75, 86, 148, 0.15)', border: '1px solid var(--border-light)', borderBottomLeftRadius: '2px', padding: '14px 20px', borderRadius: '16px', fontSize: '14px', maxWidth: '85%' }}>
+                  Generating secure query...
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Prompt input bar */}

@@ -59,12 +59,14 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "Your task is to translate natural language user queries into clean, correct, and executable SQLite queries.\n\n"
         "CRITICAL MANDATE:\n"
         "Your SELECT statement MUST ALWAYS project columns in the following exact order:\n"
-        "1) The qualified `workid` column (e.g., `T1.workid` as the very first column).\n"
-        "2) Every single column used in your WHERE clause filters (e.g., `T1.railway`, `T2.state_name`).\n"
-        "3) The columns specifically requested in the user query (e.g., `T1.outlay_modified_for_curr_fy`).\n"
-        "4) Followed by the main table's wildcard `T1.*` (where T1 is the main table `ai_works`) to load all other row details (e.g. short name of work, district name, mp name, etc.) for reference.\n"
+        "1) The qualified `workid` column (e.g., `T1.workid` or `T2.workid` matching the main table `ai_works`).\n"
+        "2) Every single column used in your WHERE clause filters, qualified with the correct table alias that actually owns that column in the schema (e.g., if filtering by `constituency_name` and `ai_works_constituency` is `T1`, you MUST select `T1.constituency_name`. Do NOT write `T2.constituency_name` since `T2` does not contain it!).\n"
+        "3) The columns specifically requested in the user query.\n"
+        "4) Followed by the main table's wildcard (e.g. `T1.*` or `T2.*` depending on which alias represents the main table `ai_works` in your query) to load all other row details (e.g. short name of work, district name, mp name, etc.) for reference.\n"
+        "Note: You must match each column's alias prefix EXACTLY to the table that contains it in the schema DDL. Do not swap prefixes.\n"
         "Example:\n"
         "User query: 'show outlay for works in CR in MP for year 2023-2024'\n"
+        "If `ai_works` is `T1` and `ai_works_state` is `T2`:\n"
         "Correct SQL SELECT: 'SELECT T1.workid, T1.railway, T2.state_name, T1.year_of_sanction, T1.outlay_modified_for_curr_fy, T1.* FROM ...'\n"
         "If you do not include both the qualified `workid` and all filter columns in the SELECT clause, the interface will fail. Never omit them.\n\n"
         f"{ddl_schemas}\n"
@@ -74,7 +76,7 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "3. Only query tables and columns defined in the schema above.\n"
         "4. Wrap your query in a single ```sql block.\n"
         "5. You must use the EXACT table names provided in the schema (e.g. use 'ai_works_state', NOT 'state'; use 'ai_works_district', NOT 'district').\n"
-        "6. Text values in the database are stored in UPPERCASE. To ensure matches, always perform case-insensitive comparisons by using the LIKE operator or wrapping text columns in LOWER() (e.g., use `LOWER(state_name) = 'punjab'` or `state_name LIKE 'punjab'`).\n"
+        "6. SQLite string comparisons are CASE-SENSITIVE by default when using the = operator. Because text values can be stored in Title Case or mixed case (e.g. 'Rajkot', 'Indore'), you MUST always perform case-insensitive comparisons: either use the LIKE operator (e.g., `T2.constituency_name LIKE 'rajkot'`) or wrap text columns in LOWER() (e.g., `LOWER(T2.constituency_name) = 'rajkot'`). Never use `=` directly on text columns without LOWER() qualification.\n"
         "7. When a user asks about districts, constituencies, or states, always select their descriptive NAME columns (e.g., `district_name`, `constituency_name`, `state_name`) rather than just their numerical codes (e.g., `district_code`), so that the results are readable by the user and the summarizer.\n"
         "8. When a user asks a follow-up question referencing 'these works', 'these IDs', or 'the above results', do NOT write SQL comment placeholders, do NOT list out raw numbers, and do NOT invent temporary tables (like 'previous_results' or 'last_query'). Instead, write a dynamic query by joining the tables or using a subquery that re-applies the filtering criteria from the previous turn.\n"
         "   Example: If Turn 1 is `SELECT * FROM ai_works WHERE state LIKE 'JAMMU AND KASHMIR'`, and Turn 2 is 'show their district names', generate: `SELECT T1.district_name FROM ai_works_district AS T1 JOIN ai_works AS T2 ON T1.workid = T2.workid WHERE T2.state LIKE 'JAMMU AND KASHMIR'`.\n"
@@ -113,21 +115,34 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "stream": False,
         "options": {
             "temperature": 0.0,
-            "num_predict": 128
+            "num_predict": 512
         }
     }
     
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=30.0)
+            response = await client.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=60.0)
             response.raise_for_status()
             result = response.json()
             raw_content = result["message"]["content"]
             
+            # Try matching with closing backticks
             sql_match = re.search(r"```sql\s*(.*?)\s*```", raw_content, re.DOTALL | re.IGNORECASE)
             if sql_match:
                 return sql_match.group(1).strip()
-            return raw_content.replace("`", "").strip()
+            
+            # Try matching without closing backticks in case of truncation
+            sql_match_open = re.search(r"```sql\s*(.*)", raw_content, re.DOTALL | re.IGNORECASE)
+            if sql_match_open:
+                return sql_match_open.group(1).replace("```", "").strip()
+                
+            # Clean up backup
+            cleaned = raw_content.replace("`", "").strip()
+            if cleaned.lower().startswith("sql\n"):
+                cleaned = cleaned[4:].strip()
+            elif cleaned.lower().startswith("sql "):
+                cleaned = cleaned[4:].strip()
+            return cleaned
             
     except (httpx.HTTPError, httpx.ConnectError):
         print(" Ollama offline. Falling back to Mock SQL generator.")
