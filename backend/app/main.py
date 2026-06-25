@@ -31,8 +31,8 @@ app = FastAPI(
 # 2. Configure CORS Security Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"], # Allow all HTTP methods (GET, POST, etc.)
     allow_headers=["*"], # Allow all headers
 )
@@ -172,3 +172,48 @@ async def chat_query(
         "rows": rows,
         "summary": summary
     }
+
+# 6. GET /api/districts (List distinct districts)
+@app.get(f"{settings.API_PREFIX}/districts")
+def list_districts(state: str = None, db: Session = Depends(get_db)):
+    """
+    Returns a sorted list of all distinct districts from the database.
+    Optionally filters by state.
+    """
+    try:
+        if state and state.lower() != "all" and state.lower() != "all states":
+            query = text(
+                "SELECT DISTINCT T1.district_name "
+                "FROM ai_works_district T1 "
+                "JOIN ai_works_state T2 ON T1.workid = T2.workid "
+                "WHERE LOWER(T2.state_name) LIKE :state AND T1.district_name IS NOT NULL AND T1.district_name != '' "
+                "ORDER BY T1.district_name ASC"
+            )
+            result = db.execute(query, {"state": f"%{state.lower()}%"}).fetchall()
+        else:
+            query = text(
+                "SELECT DISTINCT district_name FROM ai_works_district "
+                "WHERE district_name IS NOT NULL AND district_name != '' "
+                "ORDER BY district_name ASC"
+            )
+            result = db.execute(query).fetchall()
+        return [row[0].title() for row in result]
+    except Exception as e:
+        return []
+
+# 7. GET /api/states (List distinct states)
+@app.get(f"{settings.API_PREFIX}/states")
+def list_states(db: Session = Depends(get_db)):
+    """
+    Returns a sorted list of all distinct states from the database.
+    """
+    try:
+        query = text(
+            "SELECT DISTINCT state_name FROM ai_works_state "
+            "WHERE state_name IS NOT NULL AND state_name != '' "
+            "ORDER BY state_name ASC"
+        )
+        result = db.execute(query).fetchall()
+        return [row[0].title() for row in result]
+    except Exception as e:
+        return []

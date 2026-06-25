@@ -16,14 +16,18 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   
-  // View Toggle (table vs chart)
   // NEW STATES: Floating Chat Open/Close & Card selections
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [financialDistrict, setFinancialDistrict] = useState('Indore');
+  
+  // Shared Filter States
+  const [filterState, setFilterState] = useState('All');
+  const [filterDistrict, setFilterDistrict] = useState('All');
+  const [progressThreshold, setProgressThreshold] = useState('All');
+  
+  const [activeReportTab, setActiveReportTab] = useState('financial');
   const [viewMode, setViewMode] = useState('table'); 
   const [view, setView] = useState('landing');
-  const [landState, setLandState] = useState('Madhya Pradesh');
   const [theme, setTheme] = useState('dark');
 
   const toggleTheme = () => {
@@ -36,9 +40,9 @@ function App() {
     }
   };
 
-  // Static options for dropdown lists (matching our demo data)
-  const districtsList = ['Indore', 'Bhopal', 'Guna', 'Rajkot', 'Godda', 'Kathua', 'Samba', 'Jammu'];
-  const statesList = ['Madhya Pradesh', 'Punjab', 'Gujarat', 'Jammu and Kashmir', 'Haryana', 'Tamil Nadu'];
+  // Dynamic options for dropdown lists
+  const [districtsList, setDistrictsList] = useState(['Indore', 'Bhopal', 'Guna', 'Rajkot', 'Godda', 'Kathua', 'Samba', 'Jammu']);
+  const [statesList, setStatesList] = useState(['Madhya Pradesh', 'Punjab', 'Gujarat', 'Jammu and Kashmir', 'Haryana', 'Tamil Nadu']);
 
   // --- API CALLS ---
 
@@ -55,9 +59,52 @@ function App() {
     }
   };
 
+  // 1.1 Fetch Distinct Districts from Backend (Cascading)
+  const fetchDistricts = async (stateVal) => {
+    try {
+      const url = stateVal && stateVal !== 'All'
+        ? `${API_BASE}/districts?state=${encodeURIComponent(stateVal)}`
+        : `${API_BASE}/districts`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (data) {
+          setDistrictsList(data);
+          // Set initial values if they are in the list, or default to All
+          setFilterDistrict(prev => data.includes(prev) ? prev : 'All');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch districts:', err);
+    }
+  };
+
+  // 1.2 Fetch Distinct States from Backend
+  const fetchStates = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/states`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.length > 0) {
+          setStatesList(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch states:', err);
+    }
+  };
+
+  // Fetch initial data
   useEffect(() => {
     fetchTables();
+    fetchStates();
+    fetchDistricts('All');
   }, []);
+
+  // Cascading effect: whenever filterState changes, refetch districts
+  useEffect(() => {
+    fetchDistricts(filterState);
+  }, [filterState]);
 
   // 2. Handle File Ingestion
   const handleFileUpload = async (event) => {
@@ -80,6 +127,8 @@ function App() {
 
       if (response.ok) {
         fetchTables();
+        fetchDistricts();
+        fetchStates();
         setMessages((prev) => [
           ...prev,
           { sender: 'bot', text: `Successfully ingested spreadsheet: "${file.name}". New database tables are now available to query!` }
@@ -193,18 +242,100 @@ function App() {
     executeQuery(textToSend);
   };
 
-  // 6. Handle Card 1: Generate Financial Progress Report
+  // 6. Handle Tab 1: Generate Financial Progress Report
   const triggerFinancialReport = () => {
-    const queryText = `show me the outlay, expenditure, and throwforward for works in district ${financialDistrict}`;
-    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Financial Report for ${financialDistrict}` }]);
+    let queryText = '';
+    if (filterDistrict !== 'All') {
+      queryText = `show me financial progress, outlay_modified_for_curr_fy, expenditure_upto_date, throwforward_next_fy, and short_name_of_work in district ${filterDistrict}`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+      if (progressThreshold !== 'All') {
+        queryText += ` where financial progress is greater than ${progressThreshold}`;
+      }
+    } else {
+      queryText = `show me total number of works, total outlay_modified_for_curr_fy, total expenditure_upto_date, and average financial progress district wise`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+      if (progressThreshold !== 'All') {
+        queryText += ` where financial progress is greater than ${progressThreshold}`;
+      }
+    }
+    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Financial Report (State: ${filterState}, District: ${filterDistrict}, Min Progress: ${progressThreshold}%)` }]);
     setView('chat'); // Open the chatbot page
     executeQuery(queryText);
   };
 
-  // 7. Handle Card 2: Generate Land Acquisition Summary
-  const triggerLandReport = () => {
-    const queryText = `show me the land acquisition status and remarks for works in state ${landState}`;
-    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Land Acquisition Report for ${landState}` }]);
+  // 6.5 Handle Tab 2: Generate Physical Progress Report
+  const triggerPhysicalReport = () => {
+    let queryText = '';
+    if (filterDistrict !== 'All') {
+      queryText = `show me physical progress, short name of work, status flag, and division in district ${filterDistrict}`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+      if (progressThreshold !== 'All') {
+        queryText += ` where physical progress is greater than ${progressThreshold}`;
+      }
+    } else {
+      queryText = `show me total number of works and average physical progress district wise`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+      if (progressThreshold !== 'All') {
+        queryText += ` where physical progress is greater than ${progressThreshold}`;
+      }
+    }
+    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Physical Report (State: ${filterState}, District: ${filterDistrict}, Min Progress: ${progressThreshold}%)` }]);
+    setView('chat'); // Open the chatbot page
+    executeQuery(queryText);
+  };
+
+  // 6.6 Handle Tab 3: Generate Clearance Status Report
+  const triggerClearanceReport = () => {
+    let queryText = `show me land acquisition status, short name of work, and remarks for works`;
+    if (filterDistrict !== 'All') {
+      queryText += ` in district ${filterDistrict}`;
+    }
+    if (filterState !== 'All') {
+      queryText += ` in state ${filterState}`;
+    }
+    queryText += ` where remarks like clearance or remarks like forest or remarks like wildlife or remarks like environment or land_acquisition_status is not null`;
+    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Clearance Report (State: ${filterState}, District: ${filterDistrict})` }]);
+    setView('chat'); // Open the chatbot page
+    executeQuery(queryText);
+  };
+
+  // 6.7 Handle Tab 4: Generate Tender & Awards Report
+  const triggerTenderReport = () => {
+    let queryText = '';
+    if (filterDistrict !== 'All') {
+      queryText = `show me tender status, tender scope value, tender invited value, and tender awarded value for works in district ${filterDistrict}`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+    } else {
+      queryText = `show me total number of works, total tender scope value, total tender invited value, and total tender awarded value district wise`;
+      if (filterState !== 'All') {
+        queryText += ` in state ${filterState}`;
+      }
+    }
+    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Tenders & Awards Report (State: ${filterState}, District: ${filterDistrict})` }]);
+    setView('chat'); // Open the chatbot page
+    executeQuery(queryText);
+  };
+
+  // 6.8 Handle Tab 5: Generate Plan Head Summary Report
+  const triggerPlanHeadReport = () => {
+    let queryText = `show me plan head, total number of works, and total current cost group by plan head for works`;
+    if (filterDistrict !== 'All') {
+      queryText += ` in district ${filterDistrict}`;
+    }
+    if (filterState !== 'All') {
+      queryText += ` in state ${filterState}`;
+    }
+    setMessages((prev) => [...prev, { sender: 'user', text: `Generate Plan Head Summary (State: ${filterState}, District: ${filterDistrict})` }]);
     setView('chat'); // Open the chatbot page
     executeQuery(queryText);
   };
@@ -640,47 +771,147 @@ function App() {
         {/* PORTAL GRID OF CARDS */}
         <section className="portal-grid">
           
-          {/* Card 1: Financial Progress */}
-          <div className="portal-card">
-            <div className="card-title">Financial Progress Report</div>
-            <p className="card-desc">
-              Generate a dynamic budget and expenditure summary for works registered in a specific district.
-            </p>
-            <div className="card-controls">
-              <select 
-                className="form-select"
-                value={financialDistrict}
-                onChange={(e) => setFinancialDistrict(e.target.value)}
+          {/* Card 1: Wide Project Progress Dashboard (span 2 columns) */}
+          <div className="portal-card col-span-2">
+            <div className="card-title" style={{ borderBottom: 'none', paddingBottom: '0px' }}>
+              Railway Projects Dashboard
+            </div>
+            
+            {/* Unified Shared Filters Row */}
+            <div className="filters-row">
+              <div className="filter-group">
+                <label className="filter-label">Choose State</label>
+                <select 
+                  className="form-select"
+                  value={filterState}
+                  onChange={(e) => setFilterState(e.target.value)}
+                >
+                  <option value="All">All States</option>
+                  {statesList.map(st => (
+                    <option key={st} value={st}>{st}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="filter-group">
+                <label className="filter-label">Choose District</label>
+                <select 
+                  className="form-select"
+                  value={filterDistrict}
+                  onChange={(e) => setFilterDistrict(e.target.value)}
+                >
+                  <option value="All">All Districts</option>
+                  {districtsList.map(dist => (
+                    <option key={dist} value={dist}>{dist}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="filter-group">
+                <label className="filter-label">Min Progress Filter</label>
+                <select 
+                  className="form-select"
+                  value={progressThreshold}
+                  onChange={(e) => setProgressThreshold(e.target.value)}
+                >
+                  <option value="All">Show All (No filter)</option>
+                  <option value="50">Above 50% Progress</option>
+                  <option value="70">Above 70% Progress</option>
+                  <option value="80">Above 80% Progress</option>
+                  <option value="90">Above 90% Progress</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Dashboard Tabs Header */}
+            <div className="card-tabs">
+              <button 
+                className={`card-tab ${activeReportTab === 'financial' ? 'active' : ''}`}
+                onClick={() => setActiveReportTab('financial')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
               >
-                {districtsList.map(dist => (
-                  <option key={dist} value={dist}>{dist}</option>
-                ))}
-              </select>
-              <button className="btn-card-action" onClick={triggerFinancialReport} disabled={loading}>
-                Generate Report
+                Financial Progress
+              </button>
+              <button 
+                className={`card-tab ${activeReportTab === 'physical' ? 'active' : ''}`}
+                onClick={() => setActiveReportTab('physical')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Physical Progress
+              </button>
+              <button 
+                className={`card-tab ${activeReportTab === 'clearance' ? 'active' : ''}`}
+                onClick={() => setActiveReportTab('clearance')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Clearance Status
+              </button>
+              <button 
+                className={`card-tab ${activeReportTab === 'tenders' ? 'active' : ''}`}
+                onClick={() => setActiveReportTab('tenders')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Tenders & Awards
+              </button>
+              <button 
+                className={`card-tab ${activeReportTab === 'planhead' ? 'active' : ''}`}
+                onClick={() => setActiveReportTab('planhead')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Plan Head Summary
               </button>
             </div>
-          </div>
-
-          {/* Card 2: Land Acquisition Summary */}
-          <div className="portal-card">
-            <div className="card-title">Land Acquisition Summary</div>
-            <p className="card-desc">
-              Extract status logs and summaries regarding land acquisition progress across specific states.
-            </p>
-            <div className="card-controls">
-              <select 
-                className="form-select"
-                value={landState}
-                onChange={(e) => setLandState(e.target.value)}
-              >
-                {statesList.map(st => (
-                  <option key={st} value={st}>{st}</option>
-                ))}
-              </select>
-              <button className="btn-card-action" onClick={triggerLandReport} disabled={loading}>
-                Generate Summary
-              </button>
+            
+            {/* Active Tab Panel Content */}
+            <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {activeReportTab === 'financial' && (
+                <>
+                  <p className="card-desc">
+                    Generates a budget, expenditure, and calculated financial progress percentage report for the selected state and district.
+                  </p>
+                  <button className="btn-card-action" onClick={triggerFinancialReport} disabled={loading} style={{ marginTop: 'auto' }}>
+                    Generate Financial Report
+                  </button>
+                </>
+              )}
+              {activeReportTab === 'physical' && (
+                <>
+                  <p className="card-desc">
+                    Generates physical progress metrics, short names of works, status flags, and division alignments for the selected state and district.
+                  </p>
+                  <button className="btn-card-action" onClick={triggerPhysicalReport} disabled={loading} style={{ marginTop: 'auto' }}>
+                    Generate Physical Report
+                  </button>
+                </>
+              )}
+              {activeReportTab === 'clearance' && (
+                <>
+                  <p className="card-desc">
+                    Extracts land acquisition status, environmental clearances, and forest clearance status comments from project remarks.
+                  </p>
+                  <button className="btn-card-action" onClick={triggerClearanceReport} disabled={loading} style={{ marginTop: 'auto' }}>
+                    Generate Clearance Status Report
+                  </button>
+                </>
+              )}
+              {activeReportTab === 'tenders' && (
+                <>
+                  <p className="card-desc">
+                    Provides key procurement metrics including tender status, scopes, invited values, and awarded project values.
+                  </p>
+                  <button className="btn-card-action" onClick={triggerTenderReport} disabled={loading} style={{ marginTop: 'auto' }}>
+                    Generate Tenders & Awards Report
+                  </button>
+                </>
+              )}
+              {activeReportTab === 'planhead' && (
+                <>
+                  <p className="card-desc">
+                    Summarizes project counts and aggregate current costs grouped by railway Plan Head (e.g. Doubling, New Lines).
+                  </p>
+                  <button className="btn-card-action" onClick={triggerPlanHeadReport} disabled={loading} style={{ marginTop: 'auto' }}>
+                    Generate Plan Head Summary
+                  </button>
+                </>
+              )}
             </div>
           </div>
 

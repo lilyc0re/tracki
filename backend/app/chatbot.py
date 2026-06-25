@@ -60,10 +60,10 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "CRITICAL MANDATE:\n"
         "Your SELECT statement MUST ALWAYS project columns in the following exact order:\n"
         "1) The qualified `workid` column (e.g., `T1.workid` or `T2.workid` matching the main table `ai_works`).\n"
-        "2) Every single column used in your WHERE clause filters, qualified with the correct table alias that actually owns that column in the schema (e.g., if filtering by `constituency_name` and `ai_works_constituency` is `T1`, you MUST select `T1.constituency_name`. Do NOT write `T2.constituency_name` since `T2` does not contain it!).\n"
+        "2) Every single column and calculated expression used in your WHERE clause filters, qualified with the correct table alias (e.g., if filtering by `T2.constituency_name`, you MUST select `T2.constituency_name`. If filtering by a calculated expression like 'financial progress', you MUST calculate and project it, e.g., `(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress`, so the user can verify the filter values in the output table. Note: In GROUP BY/aggregation queries, you MUST still project these filter columns/expressions for verification—use aggregate functions for calculated filters, e.g., `AVG(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress`, and include standard filter columns in the SELECT and GROUP BY clauses, e.g. `T1.state`).\n"
         "3) The columns specifically requested in the user query.\n"
         "4) Followed by the main table's wildcard (e.g. `T1.*` or `T2.*` depending on which alias represents the main table `ai_works` in your query) to load all other row details (e.g. short name of work, district name, mp name, etc.) for reference.\n"
-        "Note: You must match each column's alias prefix EXACTLY to the table that contains it in the schema DDL. Do not swap prefixes.\n"
+        "Note: You must match each column's alias prefix EXACTLY to the table that contains it in the schema DDL. Do not swap prefixes. IMPORTANT: You must use the wildcard asterisk `T1.*` instead of listing out all 60+ individual columns in the SELECT clause, as listing them out individually will truncate the query and cause syntax errors.\n"
         "Example:\n"
         "User query: 'show outlay for works in CR in MP for year 2023-2024'\n"
         "If `ai_works` is `T1` and `ai_works_state` is `T2`:\n"
@@ -82,8 +82,10 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "   Example: If Turn 1 is `SELECT * FROM ai_works WHERE state LIKE 'JAMMU AND KASHMIR'`, and Turn 2 is 'show their district names', generate: `SELECT T1.district_name FROM ai_works_district AS T1 JOIN ai_works AS T2 ON T1.workid = T2.workid WHERE T2.state LIKE 'JAMMU AND KASHMIR'`.\n"
         "9. PARENTHESIS GROUPING (CRITICAL): When combining AND and OR operators in a WHERE clause, you must ALWAYS wrap the OR conditions in parentheses to enforce the correct order of evaluation (e.g., `WHERE railway = 'CR' AND (year_of_sanction = '2023-2024' OR year_of_sanction = '2024-2025') AND state = 'MADHYA PRADESH'`). Failure to do this causes incorrect data subsets to be returned.\n"
         "10. STRICT EXCLUSION: Pay close attention to short abbreviations (e.g. 'CR' = Central Railway, 'WR' = Western Railway). If a user specifies 'only' or 'strictly' a certain value (e.g., 'only CR', 'only Indore', 'only Madhya Pradesh'), ensure that your logic strictly isolates that value and excludes the rest (e.g., ensuring `railway = 'CR'` is strictly evaluated alongside the rest of the filters).\n"
-        "11. COLUMN SELECTION REQUIREMENT (MANDATORY): You must ALWAYS include both the `workid` column (e.g., `T1.workid`) AND whatever column you are filtering by in the WHERE clause (e.g., if filtering by `T2.district_name = 'INDORE'`, you MUST select `T2.district_name` AND `T1.workid` in addition to any financial/other columns) in your SELECT statement. Do not omit the filter columns from the SELECT clause under any circumstances.\n"
-        "12. COLUMN QUALIFICATION (CRITICAL): In any query involving JOINs, you must ALWAYS prefix every column in the SELECT, WHERE, GROUP BY, or ORDER BY clauses with its corresponding table name or alias (e.g. `T2.workid`, `T1.district_name`) to prevent SQLite 'ambiguous column name' errors. Never use an unqualified `workid` or `uwid` in a JOIN query."
+        "11. COLUMN SELECTION REQUIREMENT (MANDATORY): You must ALWAYS include both the `workid` column (e.g., `T1.workid`) AND whatever column you are filtering by in the WHERE clause (e.g., if filtering by `T2.district_name = 'INDORE'`, you MUST select `T2.district_name` AND `T1.workid` in addition to any financial/other columns) in your SELECT statement. Do not omit the filter columns from the SELECT clause under any circumstances. (Note: For aggregation queries using GROUP BY or COUNT, you should only select the grouping column and aggregates, and you do not need to select workid or T1.*, otherwise SQLite will throw a GROUP BY error.)\n"
+        "12. COLUMN QUALIFICATION (CRITICAL): In any query involving JOINs, you must ALWAYS prefix every column in the SELECT, WHERE, GROUP BY, or ORDER BY clauses with its corresponding table name or alias (e.g. `T2.workid`, `T1.district_name`) to prevent SQLite 'ambiguous column name' errors. Never use an unqualified `workid` or `uwid` in a JOIN query.\n"
+        "13. FINANCIAL PROGRESS CALCULATION: The database does NOT have a direct 'financial progress' column. If the user asks for 'financial progress', you must calculate it as the percentage of expenditure to cost. Use the formula: `T1.current_cost > 0 AND (T1.expenditure_upto_date * 100.0 / T1.current_cost)`. For example, 'where financial progress is greater than 90%' becomes `T1.current_cost > 0 AND (T1.expenditure_upto_date * 100.0 / T1.current_cost) > 90` (assuming T1 is the alias for `ai_works`). You MUST also project this calculated expression in your SELECT statement as `(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress` (or in GROUP BY/aggregation queries, project it as an average: `AVG(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress`) so the user can verify the data in the output table. Do NOT map it to `percentage_phy_progress`, which represents physical progress.\n"
+        "14. PHYSICAL PROGRESS COLUMN: The database table `ai_works` does NOT have a column named `physical_progress`. Instead, it uses `percentage_phy_progress` to represent physical progress. If the user asks for 'physical progress', you must use `T1.percentage_phy_progress` (assuming `T1` is `ai_works`). You must also project this column (or average it in GROUP BY queries: `AVG(T1.percentage_phy_progress) AS physical_progress`) in your SELECT statement so the user can verify the filter values."
     )
     
     # Initialize the messages list with the system instructions
@@ -115,7 +117,7 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "stream": False,
         "options": {
             "temperature": 0.0,
-            "num_predict": 512
+            "num_predict": 1024
         }
     }
     
@@ -182,7 +184,7 @@ async def generate_summary(user_query: str, sql_query: str, data_rows: list) -> 
     user_prompt = (
         f"User Question: {user_query}\n"
         f"SQL Executed: {sql_query}\n"
-        f"Total Records Found in Database: {total_rows}\n"
+        f"Number of SQL Rows Returned: {total_rows} (Note: This is the number of rows/districts/groups in the query output, not the sum of values. Look at the values in the sample rows to describe the count/sum correctly.)\n"
         f"Sample of First 5 Rows:\n{str(data_sample)}\n\n"
         "Provide a railways summary:"
     )
