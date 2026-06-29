@@ -3,6 +3,201 @@ import React, { useState, useEffect } from 'react';
 // API Configuration
 const API_BASE = 'http://localhost:8000/api';
 
+// --- MARKDOWN PARSING UTILITIES ---
+const parseInlineTextOnlyForCode = (text) => {
+  if (!text) return '';
+  const codeParts = text.split(/(`.*?`)/g);
+  return codeParts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return (
+        <code 
+          key={`code-${index}`} 
+          style={{ 
+            background: 'rgba(255,255,255,0.08)', 
+            padding: '2px 6px', 
+            borderRadius: '4px', 
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            color: 'var(--accent-cyan)'
+          }}
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
+};
+
+const parseInline = (text) => {
+  if (!text) return '';
+  const boldParts = text.split(/(\*\*.*?\*\*)/g);
+  return boldParts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      const innerText = part.slice(2, -2);
+      return (
+        <strong key={`bold-${index}`} style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+          {parseInlineTextOnlyForCode(innerText)}
+        </strong>
+      );
+    }
+    return parseInlineTextOnlyForCode(part);
+  });
+};
+
+const renderMarkdown = (text) => {
+  if (!text) return null;
+
+  const lines = text.split('\n');
+  const elements = [];
+  
+  let currentList = null; // { type: 'ul' | 'ol', items: [] }
+  let currentParagraph = [];
+
+  const flushParagraph = (key) => {
+    if (currentParagraph.length > 0) {
+      elements.push(
+        <div key={`p-${key}`} style={{ marginBottom: '10px', fontSize: '13px', lineHeight: '1.6' }}>
+          {currentParagraph.map((line, idx) => (
+            <React.Fragment key={idx}>
+              {idx > 0 && <br />}
+              {parseInline(line)}
+            </React.Fragment>
+          ))}
+        </div>
+      );
+      currentParagraph = [];
+    }
+  };
+
+  const flushList = (key) => {
+    if (currentList) {
+      const ListTag = currentList.type;
+      elements.push(
+        <ListTag 
+          key={`list-${key}`} 
+          style={{ 
+            paddingLeft: '20px', 
+            margin: '8px 0', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            gap: '4px' 
+          }}
+        >
+          {currentList.items.map((item, idx) => (
+            <li key={idx} style={{ color: 'var(--text-primary)', fontSize: '13px' }}>
+              {parseInline(item)}
+            </li>
+          ))}
+        </ListTag>
+      );
+      currentList = null;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    
+    // 1. Heading check (matches # to ######)
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph(i);
+      flushList(i);
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+      const HeadingTag = `h${level}`;
+      
+      const fontSizes = { 1: '20px', 2: '18px', 3: '16px', 4: '14px', 5: '13px', 6: '12px' };
+      const fontSize = fontSizes[level] || '14px';
+
+      elements.push(
+        <HeadingTag 
+          key={`h-${i}`} 
+          style={{ 
+            fontSize, 
+            fontWeight: '600', 
+            color: 'var(--text-primary)', 
+            marginTop: level <= 3 ? '16px' : '12px', 
+            marginBottom: '6px' 
+          }}
+        >
+          {parseInline(headingText)}
+        </HeadingTag>
+      );
+      continue;
+    }
+
+    // 2. Bullet list check (* or -)
+    const bulletMatch = line.match(/^(\*|-)\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraph(i);
+      if (currentList && currentList.type !== 'ul') {
+        flushList(i);
+      }
+      if (!currentList) {
+        currentList = { type: 'ul', items: [] };
+      }
+      currentList.items.push(bulletMatch[2]);
+      continue;
+    }
+
+    // 3. Numbered list check (1. or 2. etc.)
+    const numberMatch = line.match(/^(\d+)\.\s+(.*)$/);
+    if (numberMatch) {
+      flushParagraph(i);
+      if (currentList && currentList.type !== 'ol') {
+        flushList(i);
+      }
+      if (!currentList) {
+        currentList = { type: 'ol', items: [] };
+      }
+      currentList.items.push(numberMatch[2]);
+      continue;
+    }
+
+    // 4. Empty line check
+    if (trimmed === '') {
+      flushParagraph(i);
+      flushList(i);
+      continue;
+    }
+
+    // 5. Standard line
+    flushList(i);
+    currentParagraph.push(line);
+  }
+
+  // Flush remaining blocks
+  flushParagraph('end');
+  flushList('end');
+
+  return elements;
+};
+const filterRows = (rows, searchQuery) => {
+  if (!rows) return [];
+  if (!searchQuery) return rows;
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return rows;
+
+  if (q.includes('=')) {
+    const parts = q.split('=');
+    const key = parts[0].trim();
+    const val = parts.slice(1).join('=').trim();
+
+    if (key && val) {
+      return rows.filter(row => {
+        const matchingCol = Object.keys(row).find(k => k.toLowerCase().includes(key));
+        if (matchingCol) {
+          return String(row[matchingCol] ?? '').toLowerCase().includes(val);
+        }
+        return Object.values(row).some(v => String(v ?? '').toLowerCase().includes(q));
+      });
+    }
+  }
+
+  return rows.filter(row => Object.values(row).some(val => String(val ?? '').toLowerCase().includes(q)));
+};
 function App() {
   // --- STATE MANAGEMENT ---
   const [messages, setMessages] = useState([
@@ -27,6 +222,7 @@ function App() {
   
   const [activeReportTab, setActiveReportTab] = useState('financial');
   const [viewMode, setViewMode] = useState('table'); 
+  const [resultsSearch, setResultsSearch] = useState('');
   const [view, setView] = useState('landing');
   const [theme, setTheme] = useState('dark');
 
@@ -39,6 +235,26 @@ function App() {
       document.body.classList.remove('theme-light');
     }
   };
+
+  // Prevent scroll locks or double scrollbars by toggling body style depending on the active view
+  useEffect(() => {
+    if (view === 'chat') {
+      document.body.style.overflow = 'hidden';
+      document.body.style.height = '100vh';
+    } else {
+      document.body.style.overflow = 'auto';
+      document.body.style.height = 'auto';
+    }
+    return () => {
+      document.body.style.overflow = 'auto';
+      document.body.style.height = 'auto';
+    };
+  }, [view]);
+
+  // Reset landing page results filter when activeResult changes
+  useEffect(() => {
+    setResultsSearch('');
+  }, [activeResult]);
 
   // Dynamic options for dropdown lists
   const [districtsList, setDistrictsList] = useState(['Indore', 'Bhopal', 'Guna', 'Rajkot', 'Godda', 'Kathua', 'Samba', 'Jammu']);
@@ -368,7 +584,7 @@ function App() {
   };
 
   // --- DYNAMIC SVG CHART GENERATOR ---
-  const renderSVGChart = (resultData) => {
+  const renderSVGChart = (resultData, filterQuery = '') => {
     const dataToChart = resultData || activeResult;
     if (!dataToChart || !dataToChart.rows.length) return null;
 
@@ -414,7 +630,9 @@ function App() {
       );
     }
 
-    const chartData = dataToChart.rows.slice(0, 10);
+    const filteredRows = filterRows(dataToChart.rows, filterQuery);
+
+    const chartData = filteredRows.slice(0, 10);
     const maxVal = Math.max(...chartData.map(d => parseFloat(d[numericCol] || 0)), 1);
 
     const width = 500;
@@ -593,7 +811,14 @@ function App() {
                         {/* 2. Data Output table/chart */}
                         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: '12px', padding: '20px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px' }}>Data Output</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px' }}>Data Output</span>
+                              {msg.results.rows.length > 0 && (
+                                <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', background: 'rgba(6, 182, 212, 0.1)', padding: '2px 8px', borderRadius: '4px', fontWeight: '600' }}>
+                                  All Rows Fetched: {msg.results.rows.length}
+                                </span>
+                              )}
+                            </div>
                             
                             {msg.results.rows.length > 0 && (
                               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -631,6 +856,27 @@ function App() {
                                 >
                                   Export CSV
                                 </button>
+
+                                <input 
+                                  type="text"
+                                  placeholder="Search results..."
+                                  value={msg.tableSearch || ''}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setMessages(prev => prev.map((m, idx) => idx === index ? { ...m, tableSearch: val } : m));
+                                  }}
+                                  style={{
+                                    background: 'rgba(255, 255, 255, 0.05)',
+                                    border: '1px solid var(--border-light)',
+                                    borderRadius: '6px',
+                                    padding: '4px 10px',
+                                    fontSize: '10px',
+                                    color: 'var(--text-primary)',
+                                    outline: 'none',
+                                    width: '150px',
+                                    transition: 'border-color 0.2s'
+                                  }}
+                                />
                               </div>
                             )}
                           </div>
@@ -638,29 +884,59 @@ function App() {
                           {msg.results.rows.length === 0 ? (
                             <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No data records to display.</p>
                           ) : (
-                            (msg.viewMode || 'table') === 'table' ? (
-                              <div className="table-wrapper" style={{ maxHeight: '350px' }}>
-                                <table>
-                                  <thead>
-                                    <tr>
-                                      {msg.results.columns.map((col) => (
-                                        <th key={col}>{col}</th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {msg.results.rows.map((row, rIdx) => (
-                                      <tr key={rIdx}>
+                            (msg.viewMode || 'table') === 'table' ? (() => {
+                              const activeRows = filterRows(msg.results.rows, msg.tableSearch);
+                              const colSums = {};
+                              let hasNumericCol = false;
+                              msg.results.columns.forEach(col => {
+                                const cleanCol = col.toLowerCase();
+                                const isNumeric = ['cost', 'expenditure', 'outlay', 'throwforward', 'balance'].some(k => cleanCol.includes(k)) || cleanCol === 'total_future_cost' || cleanCol === 'total_cost';
+                                if (isNumeric) {
+                                  hasNumericCol = true;
+                                  const sum = activeRows.reduce((acc, row) => {
+                                    const val = parseFloat(row[col]);
+                                    return acc + (isNaN(val) ? 0 : val);
+                                  }, 0);
+                                  colSums[col] = sum;
+                                } else {
+                                  colSums[col] = null;
+                                }
+                              });
+                              return (
+                                <div className="table-wrapper" style={{ maxHeight: '350px' }}>
+                                  <table>
+                                    <thead>
+                                      <tr>
                                         {msg.results.columns.map((col) => (
-                                          <td key={col}>{String(row[col] ?? '')}</td>
+                                          <th key={col}>{col}</th>
                                         ))}
                                       </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ) : (
-                              renderSVGChart(msg.results)
+                                    </thead>
+                                    <tbody>
+                                      {activeRows.map((row, rIdx) => (
+                                        <tr key={rIdx}>
+                                          {msg.results.columns.map((col) => (
+                                            <td key={col}>{String(row[col] ?? '')}</td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                    {hasNumericCol && (
+                                      <tfoot style={{ borderTop: '2.5px solid var(--border-light)', fontWeight: 'bold', background: 'rgba(255,255,255,0.02)' }}>
+                                        <tr>
+                                          {msg.results.columns.map((col, idx) => (
+                                            <td key={col} style={{ color: colSums[col] !== null ? 'var(--accent-cyan)' : 'var(--text-muted)', padding: '10px 8px' }}>
+                                              {idx === 0 ? 'Total' : (colSums[col] !== null ? colSums[col].toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '')}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      </tfoot>
+                                    )}
+                                  </table>
+                                </div>
+                              );
+                            })() : (
+                              renderSVGChart(msg.results, msg.tableSearch)
                             )
                           )}
                         </div>
@@ -668,7 +944,7 @@ function App() {
                         {/* 3. IRPSM Summary */}
                         <div className="chat-bubble bot" style={{ maxWidth: '100%', alignSelf: 'stretch', background: 'rgba(75, 86, 148, 0.15)', border: '1px solid var(--border-light)', borderBottomLeftRadius: '2px', padding: '14px 20px', borderRadius: '16px', fontSize: '14px' }}>
                           <div style={{ fontSize: '10px', color: 'var(--accent-cyan)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>IRPSM Summary</div>
-                          <div style={{ color: 'var(--text-primary)', lineHeight: '1.6' }}>{msg.results.summary}</div>
+                          <div style={{ color: 'var(--text-primary)', lineHeight: '1.6' }}>{renderMarkdown(msg.results.summary)}</div>
                         </div>
                       </div>
                     ) : (
@@ -948,12 +1224,29 @@ function App() {
           <section className="results-container">
             <div className="results-header">
               <h3 style={{ fontFamily: 'Outfit', fontSize: '16px', fontWeight: '600' }}>Last Run Results</h3>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <input 
+                  type="text"
+                  placeholder="Search last run results..."
+                  value={resultsSearch}
+                  onChange={(e) => setResultsSearch(e.target.value)}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid var(--border-light)',
+                    borderRadius: '6px',
+                    padding: '6px 12px',
+                    fontSize: '11px',
+                    color: 'var(--text-primary)',
+                    outline: 'none',
+                    width: '200px',
+                    transition: 'border-color 0.2s'
+                  }}
+                />
                 <button 
                   onClick={() => setView('chat')} 
                   style={{ 
                     background: 'var(--grad-cyan-violet)', border: 'none', color: 'white',
-                    borderRadius: '6px', padding: '4px 10px', fontSize: '10px', fontWeight: '600', cursor: 'pointer' 
+                    borderRadius: '6px', padding: '6px 12px', fontSize: '10px', fontWeight: '600', cursor: 'pointer' 
                   }}
                 >
                   View in Chat Thread
@@ -972,7 +1265,14 @@ function App() {
 
             {/* Data Rows Output */}
             <div>
-              <h4 style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Data Output</h4>
+              <h4 style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                Data Output
+                {activeResult.rows.length > 0 && (
+                  <span style={{ fontSize: '10px', color: 'var(--accent-cyan)', background: 'rgba(6, 182, 212, 0.1)', padding: '2px 8px', borderRadius: '4px', fontWeight: '600' }}>
+                    All Rows Fetched: {activeResult.rows.length}
+                  </span>
+                )}
+              </h4>
               {activeResult.rows.length === 0 ? (
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Empty dataset or blocked execution.</p>
               ) : (
@@ -987,14 +1287,16 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {activeResult.rows.slice(0, 5).map((row, rIdx) => (
-                        <tr key={rIdx}>
-                          {activeResult.columns.slice(0, 8).map((col) => (
-                            <td key={col}>{String(row[col] ?? '')}</td>
-                          ))}
-                          {activeResult.columns.length > 8 && <td style={{ color: 'var(--text-muted)' }}>...</td>}
-                        </tr>
-                      ))}
+                      {filterRows(activeResult.rows, resultsSearch)
+                        .slice(0, 5)
+                        .map((row, rIdx) => (
+                          <tr key={rIdx}>
+                            {activeResult.columns.slice(0, 8).map((col) => (
+                              <td key={col}>{String(row[col] ?? '')}</td>
+                            ))}
+                            {activeResult.columns.length > 8 && <td style={{ color: 'var(--text-muted)' }}>...</td>}
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>
@@ -1004,7 +1306,7 @@ function App() {
             {/* Summary Insights */}
             <div className="summary-box">
               <div className="summary-title">IRPSM Insight Summary</div>
-              <p>{activeResult.summary}</p>
+              <div>{renderMarkdown(activeResult.summary)}</div>
             </div>
 
           </section>

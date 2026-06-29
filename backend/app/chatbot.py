@@ -83,9 +83,41 @@ async def generate_sql(user_query: str, allowed_schemas: dict, history: list = [
         "9. PARENTHESIS GROUPING (CRITICAL): When combining AND and OR operators in a WHERE clause, you must ALWAYS wrap the OR conditions in parentheses to enforce the correct order of evaluation (e.g., `WHERE railway = 'CR' AND (year_of_sanction = '2023-2024' OR year_of_sanction = '2024-2025') AND state = 'MADHYA PRADESH'`). Failure to do this causes incorrect data subsets to be returned.\n"
         "10. STRICT EXCLUSION: Pay close attention to short abbreviations (e.g. 'CR' = Central Railway, 'WR' = Western Railway). If a user specifies 'only' or 'strictly' a certain value (e.g., 'only CR', 'only Indore', 'only Madhya Pradesh'), ensure that your logic strictly isolates that value and excludes the rest (e.g., ensuring `railway = 'CR'` is strictly evaluated alongside the rest of the filters).\n"
         "11. COLUMN SELECTION REQUIREMENT (MANDATORY): You must ALWAYS include both the `workid` column (e.g., `T1.workid`) AND whatever column you are filtering by in the WHERE clause (e.g., if filtering by `T2.district_name = 'INDORE'`, you MUST select `T2.district_name` AND `T1.workid` in addition to any financial/other columns) in your SELECT statement. Do not omit the filter columns from the SELECT clause under any circumstances. (Note: For aggregation queries using GROUP BY or COUNT, you should only select the grouping column and aggregates, and you do not need to select workid or T1.*, otherwise SQLite will throw a GROUP BY error.)\n"
-        "12. COLUMN QUALIFICATION (CRITICAL): In any query involving JOINs, you must ALWAYS prefix every column in the SELECT, WHERE, GROUP BY, or ORDER BY clauses with its corresponding table name or alias (e.g. `T2.workid`, `T1.district_name`) to prevent SQLite 'ambiguous column name' errors. Never use an unqualified `workid` or `uwid` in a JOIN query.\n"
+        "12. COLUMN QUALIFICATION & ALIAS CONSISTENCY (CRITICAL): In any query involving JOINs, you must ALWAYS prefix every column in the SELECT, WHERE, GROUP BY, or ORDER BY clauses with its corresponding table name or alias (e.g. `T2.workid`, `T1.district_name`) to prevent SQLite 'ambiguous column name' errors. You MUST ensure that the table alias used in your JOIN clause (e.g. `JOIN ai_works_state AS T2`) is EXACTLY the same alias used to prefix that table's columns everywhere else in the query. Never mix up aliases (e.g., do NOT select `T2.state_name` if you joined the table as `T3`). Never use an unqualified `workid` or `uwid` in a JOIN query.\n"
         "13. FINANCIAL PROGRESS CALCULATION: The database does NOT have a direct 'financial progress' column. If the user asks for 'financial progress', you must calculate it as the percentage of expenditure to cost. Use the formula: `T1.current_cost > 0 AND (T1.expenditure_upto_date * 100.0 / T1.current_cost)`. For example, 'where financial progress is greater than 90%' becomes `T1.current_cost > 0 AND (T1.expenditure_upto_date * 100.0 / T1.current_cost) > 90` (assuming T1 is the alias for `ai_works`). You MUST also project this calculated expression in your SELECT statement as `(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress` (or in GROUP BY/aggregation queries, project it as an average: `AVG(T1.expenditure_upto_date * 100.0 / T1.current_cost) AS financial_progress`) so the user can verify the data in the output table. Do NOT map it to `percentage_phy_progress`, which represents physical progress.\n"
-        "14. PHYSICAL PROGRESS COLUMN: The database table `ai_works` does NOT have a column named `physical_progress`. Instead, it uses `percentage_phy_progress` to represent physical progress. If the user asks for 'physical progress', you must use `T1.percentage_phy_progress` (assuming `T1` is `ai_works`). You must also project this column (or average it in GROUP BY queries: `AVG(T1.percentage_phy_progress) AS physical_progress`) in your SELECT statement so the user can verify the filter values."
+        "14. PHYSICAL PROGRESS COLUMN: The database table `ai_works` does NOT have a column named `physical_progress`. Instead, it uses `percentage_phy_progress` to represent physical progress. If the user asks for 'physical progress', you must use `T1.percentage_phy_progress` (assuming `T1` is `ai_works`). You must also project this column (or average it in GROUP BY queries: `AVG(T1.percentage_phy_progress) AS physical_progress`) in your SELECT statement so the user can verify the filter values.\n"
+        "15. YEAR OF SANCTION FILTERS: The column `year_of_sanction` is a TEXT column in the format 'YYYY-YYYY' (e.g. '2025-2026'). If the user asks for 'last N years' (e.g. 'last 2 years', 'last 4 years'), you MUST NOT perform direct math subtraction on this text column (e.g. `year_of_sanction - 2`), because SQLite text-to-numeric comparisons are strictly typed and will fail. Instead, you must parse the starting year by casting the first 4 characters to an integer using `CAST(SUBSTR(T1.year_of_sanction, 1, 4) AS INTEGER)` and perform your math/comparisons on that casted expression. For 'last N years', compare it using `>= (SELECT MAX(CAST(SUBSTR(year_of_sanction, 1, 4) AS INTEGER)) - N FROM ai_works)` (where N is the number of years requested, e.g. `- 2` for last 2 years, `- 4` for last 4 years, assuming T1 is the alias for `ai_works`).\n"
+        "16. STATE FILTERING: The table `ai_works` contains a column named `state` (e.g., `T1.state`). The table `ai_works_state` contains a column named `state_name` (e.g., `T3.state_name`). Because some works span multiple states, the `T1.state` column in `ai_works` can contain comma-separated values (e.g., 'ANDAMAN AND NICOBAR ISLANDS, KARNATAKA'). Therefore, if filtering by state on the main `ai_works` table, you MUST always use the `LIKE` operator with wildcard percentages on both sides (e.g. `T1.state LIKE '%ANDAMAN AND NICOBAR ISLANDS%'`). Alternatively, if you join `ai_works_state` as `T3`, you can perform a match on `T3.state_name LIKE 'ANDAMAN AND NICOBAR ISLANDS'`. Never prefix `state` or `state_name` with the constituency or district table alias (e.g., do NOT use `T2.state_name` if T2 is `ai_works_constituency`).\n"
+        "17. TABLE JOINS (MANDATORY): All helper tables (`ai_works_state`, `ai_works_district`, `ai_works_constituency`, `ai_works_alloc`) MUST always be joined with the main table `ai_works` using the `workid` column (e.g., `ON T1.workid = T2.workid`). Do NOT join using `state_code`, `district_code`, or `constituency_code` (e.g. do NOT use `T1.state_code = T2.state_code`), because `ai_works` does not contain code columns. Every single join relation in this database links via `workid`.\n"
+        "18. STATUS FLAG VALUES: The `statusflag` column in `ai_works` is a TEXT column with code values: 'N' (stands for new proposal/not sanctioned), 'A' (stands for archived/finished), and 'P' (stands for progress/ongoing). If the user asks for 'ongoing' or 'active' or 'in progress' works, you MUST filter using `T1.statusflag = 'P'` (assuming T1 is `ai_works`). If the user asks for 'completed' or 'finished' or 'archived' works, you MUST filter using `T1.statusflag = 'A'`. If the user asks for 'new' or 'proposed' or 'not sanctioned' works, you MUST filter using `T1.statusflag = 'N'`. Never use literal strings like 'Ongoing' or 'Completed' for the `statusflag` column as they do not exist in the database.\n"
+        "19. OTHER CATEGORICAL COLUMNS AND MAPPINGS: The `physically_completed_100` column contains 'Y' (completed) or 'N' (ongoing). Zonal railway columns (e.g. `T1.railway`) contain 2-4 letter codes (e.g. 'CR', 'WR'). The `allocation` column is a TEXT column representing the source of funding (e.g. 'DF', 'Cap.', 'EBR') and NOT a numeric/percentage value. Plan head (e.g. `T1.plan_head`) is a numeric column storing plan head numbers like 16, 51, 53, 52, 64. Use these mappings exactly.\n"
+        "20. KEYWORD TO COLUMN DICTIONARY MAPPING: Follow this strict mapping when translating user questions to SQL columns:\n"
+        "    - 'ongoing' / 'active' / 'in progress' -> T1.statusflag = 'P'\n"
+        "    - 'completed' / 'finished' / 'done' / 'archived' -> T1.statusflag = 'A'\n"
+        "    - 'new' / 'proposed' / 'not sanctioned' -> T1.statusflag = 'N'\n"
+        "    - 'physical progress' / 'completion percentage' -> T1.percentage_phy_progress\n"
+        "    - 'financial progress' / 'expenditure ratio' -> (T1.expenditure_upto_date * 100.0 / T1.current_cost) (with current_cost > 0 check)\n"
+        "    - 'spent' / 'expenditure' -> T1.expenditure_upto_date\n"
+        "    - 'cost' / 'current cost' / 'estimated cost' -> T1.current_cost\n"
+        "    - 'original cost' -> T1.original_cost\n"
+        "    - 'throwforward' / 'future cost' / 'carried forward' -> T1.throwforward_next_fy\n"
+        "    - 'funding source' / 'allocated fund' -> T1.allocation (e.g. 'DF')\n"
+        "    - 'executing agency' / 'executed by' -> T1.executing_agency_rly\n"
+        "    - 'MP Name' -> T1.name_of_mp\n"
+        "    - 'Plan Head' -> T1.plan_head\n"
+        "    - 'tender value' / 'awarded value' -> T1.tender_awarded_value\n"
+        "    - 'land status' / 'land acquisition' -> T1.land_acquisition_status\n"
+        "    - 'GAD plan' -> T1.gad_plan_status\n"
+        "    - 'design status' / 'drawing status' -> T1.design_drawing_status\n"
+        "21. ROBUST SYNONYM & TYPO HANDLING (PREVENT USER ERRORS): Users may ask questions using grammatical errors, informal phrasing, or various synonyms. Map them logically:\n"
+        "    - Synonyms for 'ongoing' / 'active' / 'in progress' / 'unfinished' / 'not completed' / 'work going on' / 'running' -> T1.statusflag = 'P'\n"
+        "    - Synonyms for 'completed' / 'finished' / 'done' / 'archived' / 'closed' / 'completed 100%' -> T1.statusflag = 'A'\n"
+        "    - Synonyms for 'new proposal' / 'not sanctioned' / 'proposed' / 'future' / 'new' -> T1.statusflag = 'N'\n"
+        "    - Verbs like 'show me', 'list', 'name', 'give me', 'find', 'retrieve', 'get', 'extract' -> Map to standard SELECT column selections.\n"
+        "    - If the user misspells or variations in capitalization occur (e.g. 'ghaziabad', 'GHAZIABAD', 'Ghaziabad'), always use case-insensitive SQL matching (like LIKE with % wildcards or LOWER) to prevent query failures.\n"
+        "22. NO DIRECT SUM/COUNT AGGREGATION FOR LISTS (CRITICAL): If the user asks for a total cost, sum of expenditure, total throwforward, or total future cost for a list of works (e.g. 'give me future cost of all works of ambala constituency'), do NOT use aggregate functions like `SUM(...)` or `COUNT(...)` directly in the SQL query. Instead, write a query that retrieves the INDIVIDUAL works (selecting `T1.workid`, `T1.short_name_of_work`, and the specific cost/throwforward/expenditure columns requested). The application frontend will automatically list the individual works and display the calculated sum at the bottom of the output table. Only use aggregate functions (like `SUM` or `COUNT`) if the user explicitly asks for 'total summary stats only' or a 'GROUP BY' breakdown.\n"
+        "23. DISTINCT COLUMN NAMES FOR AUXILIARY TABLES (CRITICAL): Each auxiliary table has exactly one specific naming column: `ai_works_state` has `state_name`, `ai_works_district` has `district_name`, and `ai_works_constituency` has `constituency_name`. You must NEVER cross-reference or mix these up. For example, if you join `ai_works_district AS T2`, you MUST filter on `T2.district_name` (e.g., `T2.district_name LIKE '%Goa%'`). You must NEVER refer to `T2.state_name` on a table that is aliased to `ai_works_district` or `ai_works_constituency`! Double-check that every table alias is associated ONLY with its own columns in the SQL schema.\n"
+        "24. GEOGRAPHIC TYPO CORRECTION (MANDATORY): If the user misspells a geographic name (e.g. 'bardhman' instead of 'Bardhaman', 'gorakpur' instead of 'Gorakhpur', 'andaman' instead of 'Andaman', 'goa' instead of 'Goa'), you MUST correct the spelling in the SQL query value to match the standard spelling in the database (e.g. change '%Paschim Bardhman%' to '%Paschim Bardhaman%'). Do NOT preserve user spelling typos in the SQL query."
     )
     
     # Initialize the messages list with the system instructions
@@ -161,7 +193,23 @@ async def generate_summary(user_query: str, sql_query: str, data_rows: list) -> 
     if total_rows == 0:
         return "No matching data records were found in the database for your query."
 
-    # 1. OPTIMIZATION: Only take the first 5 rows as a sample for the LLM
+    # 1. Calculate column sums for any numeric/cost fields to give the LLM exact figures
+    totals = {}
+    if total_rows > 0:
+        first_row = data_rows[0]
+        for key, val in first_row.items():
+            key_lower = key.lower()
+            is_numeric = any(k in key_lower for k in ['cost', 'expenditure', 'outlay', 'throwforward', 'balance']) or key_lower in ['total_future_cost', 'total_cost']
+            if is_numeric:
+                try:
+                    sum_val = sum(float(row[key]) for row in data_rows if row.get(key) is not None)
+                    totals[key] = sum_val
+                except (ValueError, TypeError):
+                    pass
+
+    totals_str = "\n".join([f"Total sum of '{k}': {v:,.2f}" for k, v in totals.items()])
+
+    # 2. OPTIMIZATION: Only take the first 5 rows as a sample for the LLM
     data_sample = data_rows[:5]
     
     if MOCK_LLM:
@@ -177,14 +225,16 @@ async def generate_summary(user_query: str, sql_query: str, data_rows: list) -> 
         "Be direct and professional. Let the user know the total number of records found.\n"
         "IMPORTANT RULES:\n"
         "1. All numeric financial values in the database represent Indian Rupees (INR, ₹). Do NOT use dollars ($). Format currency with ₹ (e.g. ₹50,000 or 5 Lakhs).\n"
-        "2. Format dates in standard Indian DD-MM-YYYY format."
+        "2. Format dates in standard Indian DD-MM-YYYY format.\n"
+        "3. IMPORTANT: You MUST use the pre-calculated sums provided under 'Exact Dataset Column Sums' when summarizing the totals of the entire dataset. Do NOT try to sum or estimate the totals using *only* the first 5 sample rows, as the sample only represents a small fraction of the total rows."
     )
     
-    # 2. Craft a prompt that tells the LLM the total count and shows only the sample
+    # 3. Craft a prompt that tells the LLM the total count, exact sums, and shows only the sample
     user_prompt = (
         f"User Question: {user_query}\n"
         f"SQL Executed: {sql_query}\n"
-        f"Number of SQL Rows Returned: {total_rows} (Note: This is the number of rows/districts/groups in the query output, not the sum of values. Look at the values in the sample rows to describe the count/sum correctly.)\n"
+        f"Number of SQL Rows Returned: {total_rows}\n"
+        f"Exact Dataset Column Sums (MUST use these values for total summaries):\n{totals_str}\n\n"
         f"Sample of First 5 Rows:\n{str(data_sample)}\n\n"
         "Provide a railways summary:"
     )

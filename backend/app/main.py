@@ -20,6 +20,19 @@ async def lifespan(app: FastAPI):
     os.makedirs("backend/data", exist_ok=True)
     # Automatically create tables in SQLite (including table_metadata) on startup
     Base.metadata.create_all(bind=engine)
+    
+    # Sync helper tables on startup to fix any missing data
+    from .db import SessionLocal
+    db = SessionLocal()
+    try:
+        from .ingestion import sync_helper_tables
+        sync_helper_tables(db)
+        db.commit()
+    except Exception as e:
+        print("Failed to sync helper tables on startup:", e)
+    finally:
+        db.close()
+        
     yield
 
 # Initialize FastAPI App

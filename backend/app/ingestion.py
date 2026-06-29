@@ -80,5 +80,90 @@ def ingest_excel_file(file_path: str, original_filename: str, db:Session)-> dict
         })
         
     db.commit()
+    
+    # Sync helper tables automatically after any sheet ingestion
+    try:
+        sync_helper_tables(db)
+        db.commit()
+    except Exception as e:
+        print("Failed to auto-sync helper tables after ingestion:", e)
+        
     return {"filename": original_filename, "processed_sheets": sheets_processed}
+
+
+def sync_helper_tables(db: Session):
+    """
+    Synchronizes helper tables (ai_works_state, ai_works_district, ai_works_constituency)
+    with the main table (ai_works) by parsing comma-separated entries for missing workids.
+    """
+    connection = db.connection()
+    
+    # 1. Sync ai_works_state
+    try:
+        missing_states = connection.execute(text("""
+            SELECT workid, uwid, state 
+            FROM ai_works 
+            WHERE state IS NOT NULL AND state != '' 
+              AND workid NOT IN (SELECT DISTINCT workid FROM ai_works_state)
+        """)).fetchall()
+        
+        state_inserts = []
+        for workid, uwid, state_str in missing_states:
+            for st in state_str.split(','):
+                st = st.strip().upper()
+                if st:
+                    state_inserts.append({"workid": workid, "uwid": uwid, "state_code": None, "state_name": st})
+        if state_inserts:
+            connection.execute(text("""
+                INSERT INTO ai_works_state (workid, uwid, state_code, state_name) 
+                VALUES (:workid, :uwid, :state_code, :state_name)
+            """), state_inserts)
+    except Exception as e:
+        print("Skipping state sync or table doesn't exist:", e)
+
+    # 2. Sync ai_works_district
+    try:
+        missing_districts = connection.execute(text("""
+            SELECT workid, uwid, district 
+            FROM ai_works 
+            WHERE district IS NOT NULL AND district != '' 
+              AND workid NOT IN (SELECT DISTINCT workid FROM ai_works_district)
+        """)).fetchall()
+        
+        district_inserts = []
+        for workid, uwid, dist_str in missing_districts:
+            for ds in dist_str.split(','):
+                ds = ds.strip().upper()
+                if ds:
+                    district_inserts.append({"workid": workid, "uwid": uwid, "district_code": None, "district_name": ds})
+        if district_inserts:
+            connection.execute(text("""
+                INSERT INTO ai_works_district (workid, uwid, district_code, district_name) 
+                VALUES (:workid, :uwid, :district_code, :district_name)
+            """), district_inserts)
+    except Exception as e:
+        print("Skipping district sync or table doesn't exist:", e)
+
+    # 3. Sync ai_works_constituency
+    try:
+        missing_constituencies = connection.execute(text("""
+            SELECT workid, uwid, constituency_of_mp 
+            FROM ai_works 
+            WHERE constituency_of_mp IS NOT NULL AND constituency_of_mp != '' 
+              AND workid NOT IN (SELECT DISTINCT workid FROM ai_works_constituency)
+        """)).fetchall()
+        
+        const_inserts = []
+        for workid, uwid, const_str in missing_constituencies:
+            for cs in const_str.split(','):
+                cs = cs.strip()
+                if cs:
+                    const_inserts.append({"workid": workid, "uwid": uwid, "constituency_code": None, "constituency_name": cs})
+        if const_inserts:
+            connection.execute(text("""
+                INSERT INTO ai_works_constituency (workid, uwid, constituency_code, constituency_name) 
+                VALUES (:workid, :uwid, :constituency_code, :constituency_name)
+            """), const_inserts)
+    except Exception as e:
+        print("Skipping constituency sync or table doesn't exist:", e)
 
